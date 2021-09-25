@@ -4,7 +4,7 @@ import six
 import pause
 import argparse
 import datetime
-import dateutil
+from dateutil import parser as date_parser
 import logging.config
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -42,13 +42,13 @@ LOGGER = logging.getLogger()
 
 
 def run(driver, username, password, url, shoe_size, login_time=None, release_time=None,
-        screenshot_path=None, purchase=False):
+        page_load_timeout=None, screenshot_path=None, select_payment=False, purchase=False, num_retries=None):
     driver.maximize_window()
-    driver.set_page_load_timeout(2)
+    driver.set_page_load_timeout(page_load_timeout)
 
     if login_time:
         LOGGER.info("Waiting until login time: " + login_time)
-        pause.until(dateutil.parser.parse(login_time))
+        pause.until(date_parser.parse(login_time))
 
     try:
         login(driver=driver, username=username, password=password)
@@ -58,8 +58,9 @@ def run(driver, username, password, url, shoe_size, login_time=None, release_tim
 
     if release_time:
         LOGGER.info("Waiting until release time: " + release_time)
-        pause.until(dateutil.parser.parse(release_time))
+        pause.until(date_parser.parse(release_time))
 
+    num_retries_attempted = 0
     while True:
         try:
             try:
@@ -71,8 +72,8 @@ def run(driver, username, password, url, shoe_size, login_time=None, release_tim
             try:
                 select_shoe_size(driver=driver, shoe_size=shoe_size)
             except Exception as e:
+                # If we fail to select shoe size, try to buy anyway
                 LOGGER.exception("Failed to select shoe size: " + str(e))
-                six.reraise(Exception, e, sys.exc_info()[2])
 
             try:
                 click_buy_button(driver=driver)
@@ -80,17 +81,18 @@ def run(driver, username, password, url, shoe_size, login_time=None, release_tim
                 LOGGER.exception("Failed to click buy button: " + str(e))
                 six.reraise(Exception, e, sys.exc_info()[2])
 
-            try:
-                select_payment_option(driver=driver)
-            except Exception as e:
-                LOGGER.exception("Failed to select payment option: " + str(e))
-                six.reraise(Exception, e, sys.exc_info()[2])
+            if select_payment:
+                try:
+                    select_payment_option(driver=driver)
+                except Exception as e:
+                    LOGGER.exception("Failed to select payment option: " + str(e))
+                    six.reraise(Exception, e, sys.exc_info()[2])
 
-            try:
-                click_save_button(driver=driver)
-            except Exception as e:
-                LOGGER.exception("Failed to click save button: " + str(e))
-                six.reraise(Exception, e, sys.exc_info()[2])
+                try:
+                    click_save_button(driver=driver)
+                except Exception as e:
+                    LOGGER.exception("Failed to click save button: " + str(e))
+                    six.reraise(Exception, e, sys.exc_info()[2])
 
             if purchase:
                 try:
@@ -99,12 +101,17 @@ def run(driver, username, password, url, shoe_size, login_time=None, release_tim
                     LOGGER.exception("Failed to click submit button: " + str(e))
                     six.reraise(Exception, e, sys.exc_info()[2])
 
-            LOGGER.info("Purchased shoe at: " + str(datetime.datetime.now()))
+            LOGGER.info("Purchased shoe")
             break
         except Exception:
-            continue
+            if num_retries and num_retries_attempted < num_retries:
+                num_retries_attempted += 1
+                continue
+            else:
+                break
 
     if screenshot_path:
+        LOGGER.info("Saving screenshot")
         driver.save_screenshot(screenshot_path)
 
     driver.quit()
@@ -142,16 +149,14 @@ def login(driver, username, password):
 
 
 def select_shoe_size(driver, shoe_size):
-    LOGGER.info("Waiting for size dropdown button to appear")
-    WebDriverWait(driver, 1, 0.01).until(
-        EC.visibility_of_element_located((By.CLASS_NAME, "size-dropdown-button-css")))
+    LOGGER.info("Waiting for size dropdown button to become clickable")
+    wait_until_clickable(driver, class_name="size-dropdown-button-css", duration=10)
 
     LOGGER.info("Clicking size dropdown button")
     driver.find_element_by_class_name("size-dropdown-button-css").click()
 
     LOGGER.info("Waiting for size dropdown to appear")
-    WebDriverWait(driver, 1, 0.01).until(
-        EC.visibility_of_element_located((By.CLASS_NAME, "expanded")))
+    wait_until_visible(driver, class_name="expanded", duration=10)
 
     LOGGER.info("Selecting size from dropdown")
     driver.find_element_by_class_name("expanded").find_element_by_xpath(
@@ -161,20 +166,18 @@ def select_shoe_size(driver, shoe_size):
 def click_buy_button(driver):
     xpath = "//button[@data-qa='feed-buy-cta']"
 
-    LOGGER.info("Waiting for buy button to appear")
-    WebDriverWait(driver, 1, 0.01).until(
-        EC.visibility_of_element_located((By.XPATH, xpath)))
+    LOGGER.info("Waiting for buy button to become clickable")
+    wait_until_clickable(driver, xpath=xpath, duration=10)
 
     LOGGER.info("Clicking buy button")
     driver.find_element_by_xpath(xpath).click()
 
 
 def select_payment_option(driver):
-    xpath = "//input[data-qa='payment-radio']"
+    xpath = "//input[@data-qa='payment-radio']"
 
-    LOGGER.info("Waiting for payment checkbox to appear")
-    WebDriverWait(driver, 1, 0.01).until(
-        EC.visibility_of_element_located((By.XPATH, xpath)))
+    LOGGER.info("Waiting for payment checkbox to become clickable")
+    wait_until_clickable(driver, xpath=xpath, duration=10)
 
     LOGGER.info("Checking payment checkbox")
     driver.find_element_by_xpath(xpath).click()
@@ -183,9 +186,8 @@ def select_payment_option(driver):
 def click_save_button(driver):
     xpath = "//button[text()='Save &amp; Continue']"
 
-    LOGGER.info("Waiting for save button to appear")
-    WebDriverWait(driver, 1, 0.01).until(
-        EC.visibility_of_element_located((By.XPATH, xpath)))
+    LOGGER.info("Waiting for save button to become clickable")
+    wait_until_clickable(driver, xpath=xpath, duration=10)
 
     LOGGER.info("Clicking save button")
     driver.find_element_by_xpath(xpath).click()
@@ -194,20 +196,25 @@ def click_save_button(driver):
 def click_submit_button(driver):
     xpath = "//button[text()='Submit Order']"
 
-    LOGGER.info("Waiting for submit button to appear")
-    WebDriverWait(driver, 1, 0.01).until(
-        EC.visibility_of_element_located((By.XPATH, xpath)))
+    LOGGER.info("Waiting for submit button to become clickable")
+    wait_until_clickable(driver, xpath=xpath, duration=10)
 
     LOGGER.info("Clicking submit button")
     driver.find_element_by_xpath(xpath).click()
 
 
-def wait_until_clickable(driver, xpath, duration=10000, frequency=0.1):
-    WebDriverWait(driver, duration, frequency).until(EC.element_to_be_clickable((By.XPATH, xpath)))
+def wait_until_clickable(driver, xpath=None, class_name=None, duration=10000, frequency=0.01):
+    if xpath:
+        WebDriverWait(driver, duration, frequency).until(EC.element_to_be_clickable((By.XPATH, xpath)))
+    elif class_name:
+        WebDriverWait(driver, duration, frequency).until(EC.element_to_be_clickable((By.CLASS_NAME, class_name)))
 
 
-def wait_until_visible(driver, xpath, duration=10000, frequency=0.1):
-    WebDriverWait(driver, duration, frequency).until(EC.visibility_of_element_located((By.XPATH, xpath)))
+def wait_until_visible(driver, xpath=None, class_name=None, duration=10000, frequency=0.01):
+    if xpath:
+        WebDriverWait(driver, duration, frequency).until(EC.visibility_of_element_located((By.XPATH, xpath)))
+    elif class_name:
+        WebDriverWait(driver, duration, frequency).until(EC.visibility_of_element_located((By.CLASS_NAME, class_name)))
 
 
 if __name__ == "__main__":
@@ -219,9 +226,12 @@ if __name__ == "__main__":
     parser.add_argument("--login-time", default=None)
     parser.add_argument("--release-time", default=None)
     parser.add_argument("--screenshot-path", default=None)
+    parser.add_argument("--page-load-timeout", type=int, default=2)
     parser.add_argument("--driver-type", default="firefox", choices=("firefox", "chrome"))
     parser.add_argument("--headless", action="store_true")
+    parser.add_argument("--select-payment", action="store_true")
     parser.add_argument("--purchase", action="store_true")
+    parser.add_argument("--num-retries", type=int, default=1)
     args = parser.parse_args()
 
     driver_ = None
@@ -247,5 +257,6 @@ if __name__ == "__main__":
         driver_ = webdriver.Chrome(executable_path=executable_path, chrome_options=options)
 
     run(driver=driver_, username=args.username, password=args.password, url=args.url, shoe_size=args.shoe_size,
-        login_time=args.login_time, release_time=args.release_time, screenshot_path=args.screenshot_path,
-        purchase=args.purchase)
+        login_time=args.login_time, release_time=args.release_time, page_load_timeout=args.page_load_timeout,
+        screenshot_path=args.screenshot_path, select_payment=args.select_payment, purchase=args.purchase,
+        num_retries=args.num_retries)
